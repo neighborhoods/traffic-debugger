@@ -6,8 +6,11 @@ import (
 	"net/http"
 )
 
-var contentTypeHeader = http.CanonicalHeaderKey("Content-Type")
-var connectionHeader = http.CanonicalHeaderKey("Connection")
+const (
+	contentTypeHeader = "Content-Type"
+	connectionHeader  = "Connection"
+	clientIDHeader    = "X-Client-ID"
+)
 
 type handler struct {
 	options     Options
@@ -16,15 +19,19 @@ type handler struct {
 
 func (h handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		fmt.Printf("got request to %v\n", r.URL.Path)
+		fmt.Printf("Handled unknown path: %v\n", r.URL.Path)
 		return
+	}
+
+	clientID := r.Header.Get(clientIDHeader)
+	if clientID != "" {
+		h.connTracker.TrackRequestClient(r, clientID)
 	}
 
 	if h.options.MaxRequests > 0 {
 		requestCount := h.connTracker.GetRequestCount(r)
 		if requestCount >= h.options.MaxRequests {
-			w.Header()[connectionHeader] = []string{"close"}
-			fmt.Printf("requested connection close (%v requests) for %v\n", requestCount, getRequestConnectionID(r))
+			w.Header().Set(connectionHeader, "close")
 		}
 	}
 
@@ -35,17 +42,14 @@ func (h handler) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.MarshalIndent(stats, "", "\t")
 	if err != nil {
-		w.Header()[contentTypeHeader] = []string{"text/plain"}
+		w.Header().Set(contentTypeHeader, "text/plain")
 		r.Close = true
 		w.WriteHeader(500)
 		fmt.Fprintf(w, "Error: %v", err)
 		return
 	}
 
-	// fmt.Printf("Handled url: %s\n", r.URL.Path)
-	// fmt.Printf("Handled request: %s\n", stats.RandomString)
-
-	w.Header()[contentTypeHeader] = []string{"application/json"}
+	w.Header().Set(contentTypeHeader, "application/json")
 	w.Write(data)
 }
 

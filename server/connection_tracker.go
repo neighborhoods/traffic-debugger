@@ -18,12 +18,15 @@ type connectionTracker struct {
 	metricsConnectionsOpened    prometheus.Counter
 	metricsConnectionsClosed    prometheus.Counter
 	metricsConnectionsRequests  prometheus.Histogram
+	metricsConnectionsClients   prometheus.Histogram
 	metricsConnectionsDurations prometheus.Histogram
+	metricsConnectionsInFlight  prometheus.GaugeFunc
 }
 
 type connectionStats struct {
 	requestCount int
 	openTime     time.Time
+	clientIDs    map[string]bool
 }
 
 func newConnectionTracker() *connectionTracker {
@@ -60,6 +63,15 @@ func (t *connectionTracker) SetupMetrics(namespace string) {
 	})
 	t.metricsConnectionsClosed.Add(0)
 
+	t.metricsConnectionsClients = promauto.NewHistogram(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Subsystem: "connections",
+		Name:      "clients",
+		Help:      "Number of frontend clients per connection.",
+
+		Buckets: []float64{1, 2, 3, 4, 5, 10, 20, 50, 100},
+	})
+
 	t.metricsConnectionsRequests = promauto.NewHistogram(prometheus.HistogramOpts{
 		Namespace: namespace,
 		Subsystem: "connections",
@@ -77,6 +89,13 @@ func (t *connectionTracker) SetupMetrics(namespace string) {
 
 		Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300},
 	})
+
+	t.metricsConnectionsInFlight = promauto.NewGaugeFunc(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: "connections",
+		Name:      "in_flight",
+		Help:      "Number of connections that are currently being tracked.",
+	}, func() float64 { return float64(t.GetOpenConnections()) })
 }
 
 func (t *connectionTracker) GetRequestCount(req *http.Request) int {
@@ -91,6 +110,28 @@ func (t *connectionTracker) GetRequestCount(req *http.Request) int {
 	}
 
 	return stats.requestCount
+}
+
+func (t *connectionTracker) GetOpenConnections() int {
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+
+	return len(t.connections)
+}
+
+func (t *connectionTracker) TrackRequestClient(req *http.Request, clientID string) {
+	id := getRequestConnectionID(req)
+
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+
+	stats, ok := t.connections[id]
+	if !ok {
+		panic(fmt.Errorf("cannot get connection stats for untracked connection %v", id))
+	}
+
+	stats.clientIDs[clientID] = true
+	t.connections[id] = stats
 }
 
 func (t *connectionTracker) handleConnStateEvent(conn net.Conn, event http.ConnState) {
@@ -128,7 +169,8 @@ func (t *connectionTracker) newConnection(conn net.Conn) {
 	}
 
 	stats := connectionStats{
-		openTime: time.Now(),
+		openTime:  time.Now(),
+		clientIDs: make(map[string]bool),
 	}
 
 	t.connections[id] = stats
@@ -173,6 +215,10 @@ func (t *connectionTracker) closedConnection(conn net.Conn) {
 	if t.metricsConnectionsDurations != nil {
 		connDuration := time.Since(stats.openTime)
 		t.metricsConnectionsDurations.Observe(connDuration.Seconds())
+	}
+
+	if t.metricsConnectionsClients != nil {
+		t.metricsConnectionsClients.Observe(float64(len(stats.clientIDs)))
 	}
 
 	if t.metricsConnectionsRequests != nil {
