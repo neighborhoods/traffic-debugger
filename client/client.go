@@ -72,7 +72,6 @@ func sendRequest(ctx context.Context, tripper http.RoundTripper, req *http.Reque
 	req = req.WithContext(ctx)
 	fmt.Printf("%v %v\n", req.Method, req.URL.String())
 	response, err := tripper.RoundTrip(req)
-	fmt.Printf("Response: %v\n", response.StatusCode)
 	if err != nil {
 		return err
 	}
@@ -80,6 +79,8 @@ func sendRequest(ctx context.Context, tripper http.RoundTripper, req *http.Reque
 	if response == nil {
 		panic("unexpected nil response after nil error")
 	}
+
+	fmt.Printf("Response: %v\n", response.StatusCode)
 
 	err = ReadAndClose(response.Body)
 	if err != nil {
